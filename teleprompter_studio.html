@@ -1,0 +1,1092 @@
+<!DOCTYPE html>
+<html lang="es" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Teleprompter Studio</title>
+    
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/@phosphor-icons/web"></script>
+    
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        primary: '#6366f1',
+                        surface: 'rgba(15, 23, 42, 0.75)',
+                    },
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                    }
+                }
+            }
+        }
+    </script>
+    
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+        
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #000;
+            color: #fff;
+            overflow: hidden; /* Prevenir scroll global */
+        }
+
+        /* Utilidades personalizadas */
+        .glass-panel {
+            background-color: rgba(15, 23, 42, 0.6);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .mirror-video {
+            transform: scaleX(-1);
+        }
+
+        .mirror-text {
+            transform: scaleX(-1);
+        }
+
+        /* Modo presentación: la pantalla ocupa el lienzo y la cámara queda como miniatura */
+        #screen-preview {
+            display: none;
+            background: #050505;
+        }
+
+        body.presentation-mode #screen-preview {
+            display: block;
+        }
+
+        body.presentation-mode #camera-preview {
+            inset: auto 1.5rem 1.5rem auto;
+            width: clamp(150px, 19vw, 300px);
+            height: clamp(100px, 15vw, 190px);
+            object-fit: cover;
+            border: 3px solid rgba(255,255,255,.9);
+            border-radius: 1rem;
+            box-shadow: 0 12px 40px rgba(0,0,0,.65);
+            z-index: 20;
+        }
+
+        body.presentation-mode #prompter-container {
+            z-index: 10;
+        }
+
+        /* Ocultar barra de desplazamiento en el teleprompter */
+        #prompter-scroll-area::-webkit-scrollbar {
+            display: none;
+        }
+        #prompter-scroll-area {
+            -ms-overflow-style: none;
+            scrollbar-width: none;
+        }
+
+        /* Transiciones suaves para la interfaz */
+        .fade-transition {
+            transition: opacity 0.3s ease, transform 0.3s ease;
+        }
+
+        .ui-hidden {
+            opacity: 0;
+            pointer-events: none;
+            transform: translateY(10px);
+        }
+
+        input[type=range] {
+            accent-color: #6366f1;
+        }
+        
+        .pulse-red {
+            animation: pulse-red 2s infinite;
+        }
+        
+        @keyframes pulse-red {
+            0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7); }
+            70% { transform: scale(1); box-shadow: 0 0 0 10px rgba(239, 68, 68, 0); }
+            100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+        }
+    </style>
+</head>
+<body class="w-screen h-screen relative flex flex-col items-center justify-center">
+
+    <video id="screen-preview" class="absolute inset-0 w-full h-full object-contain z-0" autoplay muted playsinline></video>
+    <video id="camera-preview" class="absolute inset-0 w-full h-full object-cover z-0 mirror-video" autoplay muted playsinline></video>
+
+    <div id="prompter-container" class="absolute inset-0 z-10 flex justify-center transition-all duration-300">
+        <!-- Overlay oscuro configurable -->
+        <div id="prompter-bg" class="absolute inset-0 bg-black/50 transition-opacity duration-300"></div>
+        
+        <!-- Área de lectura -->
+        <div id="prompter-scroll-area" class="relative w-full max-w-4xl h-full overflow-hidden flex justify-center cursor-ns-resize" style="padding-top: 50vh; padding-bottom: 50vh;">
+            <div id="prompter-text" class="w-full text-center text-4xl leading-relaxed whitespace-pre-wrap px-4 pb-32 pt-10" style="transform: translateY(0px);">
+                <!-- El texto por defecto irá aquí -->
+            </div>
+            
+            <!-- Línea de enfoque (Centro) -->
+            <div id="focus-line" class="absolute top-1/2 left-0 w-full h-16 -translate-y-1/2 border-y-2 border-primary/50 pointer-events-none transition-opacity">
+                <div class="absolute -left-2 top-1/2 -translate-y-1/2 w-4 h-4 bg-primary rounded-full blur-sm"></div>
+                <div class="absolute -right-2 top-1/2 -translate-y-1/2 w-4 h-4 bg-primary rounded-full blur-sm"></div>
+            </div>
+        </div>
+    </div>
+
+    <div id="top-bar" class="absolute top-0 left-0 w-full p-4 z-30 flex justify-between items-start fade-transition">
+        <div class="glass-panel p-3 rounded-xl flex flex-col gap-2 max-w-xs md:max-w-md w-full">
+            <div class="flex items-center gap-2 text-xs text-gray-300 bg-black/40 p-2 rounded-lg mb-1">
+                <i class="ph ph-shield-check text-green-400 text-lg"></i>
+                <span class="leading-tight">Privacidad total: Tu video se procesa localmente en tu navegador y no se envía a ningún servidor.</span>
+            </div>
+            
+            <div class="flex flex-col gap-2">
+                <select id="camera-select" class="w-full bg-slate-800/80 border border-slate-600 rounded-lg py-1.5 px-3 text-sm focus:outline-none focus:border-primary">
+                    <option value="">Buscando cámaras...</option>
+                </select>
+                <select id="mic-select" class="w-full bg-slate-800/80 border border-slate-600 rounded-lg py-1.5 px-3 text-sm focus:outline-none focus:border-primary">
+                    <option value="">Buscando micrófonos...</option>
+                </select>
+                <button id="btn-screen-share" class="w-full bg-indigo-500/20 hover:bg-indigo-500/40 border border-indigo-400/40 text-indigo-100 rounded-lg py-2 px-3 text-sm transition-colors flex items-center justify-center gap-2">
+                    <i class="ph ph-presentation text-lg"></i><span>Compartir pantalla</span>
+                </button>
+            </div>
+        </div>
+        
+        <!-- Indicador de grabación oculto por defecto -->
+        <div id="recording-indicator" class="hidden glass-panel px-4 py-2 rounded-full flex items-center gap-3">
+            <div class="w-3 h-3 bg-red-500 rounded-full pulse-red"></div>
+            <span id="recording-time" class="font-mono text-lg font-bold">00:00</span>
+        </div>
+    </div>
+
+    <div id="settings-panel" class="absolute right-4 top-1/2 -translate-y-1/2 glass-panel p-5 rounded-2xl z-30 w-72 flex flex-col gap-5 fade-transition">
+        <div class="flex justify-between items-center border-b border-white/10 pb-2">
+            <h3 class="font-semibold text-lg flex items-center gap-2"><i class="ph ph-sliders"></i> Ajustes</h3>
+            <button id="btn-edit-script" class="text-sm bg-primary/20 hover:bg-primary/40 text-primary-100 px-3 py-1 rounded-lg transition-colors flex items-center gap-1">
+                <i class="ph ph-pencil-simple"></i> Editar Guion
+            </button>
+        </div>
+
+        <!-- Tamaño de texto -->
+        <div class="flex flex-col gap-2">
+            <label class="text-sm text-gray-300 flex justify-between">
+                <span>Tamaño del texto</span>
+                <span id="lbl-size">48px</span>
+            </label>
+            <div class="flex items-center gap-3">
+                <button id="btn-size-dec" class="p-1 hover:bg-white/10 rounded"><i class="ph ph-minus"></i></button>
+                <input type="range" id="slider-size" min="24" max="96" value="48" class="flex-1">
+                <button id="btn-size-inc" class="p-1 hover:bg-white/10 rounded"><i class="ph ph-plus"></i></button>
+            </div>
+        </div>
+
+        <!-- Velocidad -->
+        <div class="flex flex-col gap-2">
+            <label class="text-sm text-gray-300 flex justify-between">
+                <span>Velocidad</span>
+                <span id="lbl-speed">1x</span>
+            </label>
+            <div class="flex items-center gap-3">
+                <button id="btn-speed-dec" class="p-1 hover:bg-white/10 rounded"><i class="ph ph-tortoise"></i></button>
+                <input type="range" id="slider-speed" min="0" max="150" value="50" class="flex-1">
+                <button id="btn-speed-inc" class="p-1 hover:bg-white/10 rounded"><i class="ph ph-rabbit"></i></button>
+            </div>
+        </div>
+
+        <!-- Opacidad de fondo -->
+        <div class="flex flex-col gap-2">
+            <label class="text-sm text-gray-300 flex justify-between">
+                <span>Fondo Oscuro</span>
+                <span id="lbl-opacity">50%</span>
+            </label>
+            <input type="range" id="slider-opacity" min="0" max="100" value="50" class="w-full">
+        </div>
+
+        <!-- Imagen de cámara -->
+        <div class="border-t border-white/10 pt-3 flex flex-col gap-3">
+            <div class="text-sm font-medium text-gray-200 flex items-center gap-2">
+                <i class="ph ph-sun text-yellow-300"></i> Imagen de cámara
+            </div>
+            <div class="flex flex-col gap-1">
+                <label class="text-xs text-gray-400 flex justify-between"><span>Brillo</span><span id="lbl-camera-brightness">100%</span></label>
+                <input type="range" id="slider-camera-brightness" min="50" max="160" value="100" class="w-full">
+            </div>
+            <div class="flex flex-col gap-1">
+                <label class="text-xs text-gray-400 flex justify-between"><span>Contraste</span><span id="lbl-camera-contrast">100%</span></label>
+                <input type="range" id="slider-camera-contrast" min="50" max="160" value="100" class="w-full">
+            </div>
+            <div class="flex flex-col gap-1">
+                <label class="text-xs text-gray-400 flex justify-between"><span>Saturación</span><span id="lbl-camera-saturation">100%</span></label>
+                <input type="range" id="slider-camera-saturation" min="0" max="180" value="100" class="w-full">
+            </div>
+            <button id="btn-camera-reset" class="text-xs text-gray-300 hover:text-white bg-white/5 hover:bg-white/10 rounded-lg py-1.5 transition-colors">Restablecer imagen</button>
+        </div>
+
+        <!-- Opciones rápidas (Grid) -->
+        <div class="grid grid-cols-2 gap-2 mt-2">
+            <button id="btn-align" class="bg-white/5 hover:bg-white/10 p-2 rounded-lg text-sm flex flex-col items-center gap-1 transition-colors">
+                <i class="ph ph-text-align-center text-xl"></i>
+                <span id="lbl-align-text">Centrado</span>
+            </button>
+            <button id="btn-mirror" class="bg-white/5 hover:bg-white/10 p-2 rounded-lg text-sm flex flex-col items-center gap-1 transition-colors">
+                <i class="ph ph-arrows-left-right text-xl"></i>
+                <span>Espejo</span>
+            </button>
+            <button id="btn-width" class="bg-white/5 hover:bg-white/10 p-2 rounded-lg text-sm flex flex-col items-center gap-1 transition-colors">
+                <i class="ph ph-arrows-out-line-horizontal text-xl"></i>
+                <span>Ancho</span>
+            </button>
+            <button id="btn-lineheight" class="bg-white/5 hover:bg-white/10 p-2 rounded-lg text-sm flex flex-col items-center gap-1 transition-colors">
+                <i class="ph ph-text-aa text-xl"></i>
+                <span>Interlineado</span>
+            </button>
+        </div>
+    </div>
+
+    <div id="bottom-bar" class="absolute bottom-6 left-1/2 -translate-x-1/2 z-30 flex items-center gap-4 fade-transition">
+        
+        <!-- Control de Teleprompter -->
+        <div class="glass-panel p-2 rounded-2xl flex items-center gap-2">
+            <button id="btn-reset-prompter" class="p-3 hover:bg-white/10 rounded-xl transition-colors tooltip-trigger" title="Reiniciar (Inicio)">
+                <i class="ph ph-arrow-counter-clockwise text-2xl"></i>
+            </button>
+            <button id="btn-play-prompter" class="p-3 bg-primary hover:bg-indigo-400 text-white rounded-xl transition-colors shadow-lg flex items-center gap-2 min-w-[120px] justify-center">
+                <i class="ph ph-play text-2xl" id="icon-play-pause"></i>
+                <span id="lbl-play-pause" class="font-medium">Iniciar</span>
+            </button>
+        </div>
+
+        <!-- Separador -->
+        <div class="h-10 w-px bg-white/20 mx-2"></div>
+
+        <!-- Botón de Grabar -->
+        <button id="btn-record" class="group relative flex items-center justify-center w-16 h-16 bg-white rounded-full hover:scale-105 transition-transform shadow-xl">
+            <div id="record-inner-circle" class="w-12 h-12 bg-red-500 rounded-full transition-all duration-300"></div>
+        </button>
+        
+        <!-- Botón para detener grabación (Oculto inicio) -->
+        <button id="btn-stop-record" class="hidden glass-panel px-6 py-4 rounded-full text-red-400 hover:text-red-300 hover:bg-white/10 transition-colors font-semibold flex items-center gap-2 shadow-lg border border-red-500/30">
+            <i class="ph ph-stop-circle text-2xl"></i> Finalizar Grabación
+        </button>
+        
+    </div>
+
+    <div id="script-modal" class="hidden absolute inset-0 z-50 bg-black/80 flex items-center justify-center p-4 backdrop-blur-sm">
+        <div class="glass-panel w-full max-w-3xl flex flex-col rounded-2xl overflow-hidden shadow-2xl border border-white/10">
+            <div class="p-4 border-b border-white/10 flex justify-between items-center bg-slate-900/50">
+                <h2 class="text-xl font-bold flex items-center gap-2"><i class="ph ph-file-text"></i> Tu Guion</h2>
+                <button id="btn-close-script" class="p-2 hover:bg-white/10 rounded-lg transition-colors"><i class="ph ph-x text-xl"></i></button>
+            </div>
+            <div class="p-1">
+                <textarea id="script-input" class="w-full h-[50vh] p-4 bg-slate-950/80 text-white resize-none focus:outline-none focus:ring-2 focus:ring-primary text-lg" placeholder="Pega o escribe tu texto aquí..."></textarea>
+            </div>
+            <div class="p-4 border-t border-white/10 bg-slate-900/50 flex justify-end gap-3">
+                <button id="btn-clear-script" class="px-4 py-2 rounded-lg hover:bg-white/10 transition-colors text-red-300">Borrar todo</button>
+                <button id="btn-save-script" class="px-6 py-2 bg-primary hover:bg-indigo-400 rounded-lg transition-colors font-medium shadow-lg">Guardar y Usar</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="preview-modal" class="hidden absolute inset-0 z-50 bg-black/90 flex items-center justify-center p-4 backdrop-blur-md">
+        <div class="glass-panel w-full max-w-4xl rounded-3xl overflow-hidden shadow-2xl flex flex-col border border-white/10">
+            <div class="p-5 border-b border-white/10 flex justify-between items-center bg-slate-900/80">
+                <h2 class="text-2xl font-bold flex items-center gap-2 text-green-400"><i class="ph ph-check-circle"></i> Grabación Completada</h2>
+                <button id="btn-discard" class="text-gray-400 hover:text-white transition-colors flex items-center gap-1 px-3 py-1 rounded hover:bg-white/10">
+                    <i class="ph ph-trash"></i> Descartar
+                </button>
+            </div>
+            
+            <div class="relative bg-black flex-1 flex justify-center items-center min-h-[40vh] max-h-[60vh] p-4">
+                <video id="final-video-preview" controls class="max-h-full max-w-full rounded-lg shadow-lg" playsinline></video>
+                
+                <!-- Loading overlay para conversión -->
+                <div id="conversion-overlay" class="hidden absolute inset-0 bg-black/80 flex flex-col items-center justify-center z-10 backdrop-blur-sm">
+                    <i class="ph ph-spinner-gap text-5xl text-primary animate-spin mb-4"></i>
+                    <h3 class="text-xl font-semibold mb-2">Procesando archivo MP4...</h3>
+                    <p class="text-gray-400 text-sm mb-4">No cierres el navegador</p>
+                    <div class="w-64 h-2 bg-slate-700 rounded-full overflow-hidden">
+                        <div id="conversion-progress" class="h-full bg-primary w-0 transition-all duration-300"></div>
+                    </div>
+                    <span id="conversion-text" class="text-xs text-gray-500 mt-2">Iniciando motor FFmpeg...</span>
+                </div>
+            </div>
+            
+            <div class="p-6 bg-slate-900/80 border-t border-white/10 flex flex-col sm:flex-row justify-between items-center gap-4">
+                <div class="text-gray-300">
+                    Duración: <span id="preview-duration" class="font-mono font-bold text-white">00:00</span>
+                </div>
+                <div class="flex gap-3 w-full sm:w-auto">
+                    <button id="btn-download-mp4" class="flex-1 sm:flex-none px-6 py-3 bg-primary hover:bg-indigo-400 text-white rounded-xl font-bold flex items-center justify-center gap-2 shadow-[0_0_15px_rgba(99,102,241,0.4)] transition-all hover:scale-105">
+                        <i class="ph ph-download-simple text-xl"></i> Descargar MP4
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+        // Importar FFmpeg v0.12 desde CDN (Versión compatible con Single Thread para evitar errores de SharedArrayBuffer en entornos sin COOP/COEP)
+        import { FFmpeg } from 'https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/+esm';
+        import { fetchFile } from 'https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/+esm';
+
+        const APP_STATE = {
+            stream: null,
+            displayStream: null,
+            presentationStream: null,
+            compositeCanvas: null,
+            compositeAnimationId: null,
+            audioContext: null,
+            mediaRecorder: null,
+            recordedChunks: [],
+            isRecording: false,
+            recordingStartTime: 0,
+            timerInterval: null,
+            
+            // Teleprompter
+            isScrolling: false,
+            scrollY: 0,
+            lastScrollTime: 0,
+            animationFrameId: null,
+            
+            // Ajustes
+            speed: 50, // 0 a 150
+            fontSize: 48,
+            lineHeight: 1.5,
+            widthPct: 100, // 50, 75, 100
+            align: 'center', // center, left
+            mirrored: false,
+            opacity: 50,
+            cameraBrightness: 100,
+            cameraContrast: 100,
+            cameraSaturation: 100,
+            
+            // Texto por defecto
+            text: `¡Hola! Bienvenido a tu Teleprompter Studio.\n\nPuedes editar este texto haciendo clic en "Editar Guion".\n\nAjusta el tamaño, la velocidad y presiona "Grabar" cuando estés listo.\n\nRecuerda mirar a la cámara para conectar mejor con tu audiencia.\n\n¡Mucho éxito en tu grabación!`
+        };
+
+        const UI = {
+            videoPreview: document.getElementById('camera-preview'),
+            screenPreview: document.getElementById('screen-preview'),
+            prompterText: document.getElementById('prompter-text'),
+            prompterScrollArea: document.getElementById('prompter-scroll-area'),
+            prompterBg: document.getElementById('prompter-bg'),
+            
+            // Selectores de dispositivo
+            cameraSelect: document.getElementById('camera-select'),
+            micSelect: document.getElementById('mic-select'),
+            btnScreenShare: document.getElementById('btn-screen-share'),
+            
+            // Paneles
+            topBar: document.getElementById('top-bar'),
+            settingsPanel: document.getElementById('settings-panel'),
+            bottomBar: document.getElementById('bottom-bar'),
+            
+            // Botones principales
+            btnRecord: document.getElementById('btn-record'),
+            btnStopRecord: document.getElementById('btn-stop-record'),
+            btnPlayPrompter: document.getElementById('btn-play-prompter'),
+            btnResetPrompter: document.getElementById('btn-reset-prompter'),
+            
+            // UI Grabación
+            recordInnerCircle: document.getElementById('record-inner-circle'),
+            recordingIndicator: document.getElementById('recording-indicator'),
+            recordingTime: document.getElementById('recording-time'),
+            focusLine: document.getElementById('focus-line'),
+            
+            // Configuración
+            sliderSize: document.getElementById('slider-size'),
+            lblSize: document.getElementById('lbl-size'),
+            sliderSpeed: document.getElementById('slider-speed'),
+            lblSpeed: document.getElementById('lbl-speed'),
+            sliderOpacity: document.getElementById('slider-opacity'),
+            lblOpacity: document.getElementById('lbl-opacity'),
+            sliderCameraBrightness: document.getElementById('slider-camera-brightness'),
+            sliderCameraContrast: document.getElementById('slider-camera-contrast'),
+            sliderCameraSaturation: document.getElementById('slider-camera-saturation'),
+            lblCameraBrightness: document.getElementById('lbl-camera-brightness'),
+            lblCameraContrast: document.getElementById('lbl-camera-contrast'),
+            lblCameraSaturation: document.getElementById('lbl-camera-saturation'),
+            btnCameraReset: document.getElementById('btn-camera-reset'),
+            
+            btnSizeInc: document.getElementById('btn-size-inc'),
+            btnSizeDec: document.getElementById('btn-size-dec'),
+            btnSpeedInc: document.getElementById('btn-speed-inc'),
+            btnSpeedDec: document.getElementById('btn-speed-dec'),
+            
+            btnAlign: document.getElementById('btn-align'),
+            lblAlignText: document.getElementById('lbl-align-text'),
+            btnMirror: document.getElementById('btn-mirror'),
+            btnWidth: document.getElementById('btn-width'),
+            btnLineHeight: document.getElementById('btn-lineheight'),
+            
+            // Modales
+            scriptModal: document.getElementById('script-modal'),
+            scriptInput: document.getElementById('script-input'),
+            btnEditScript: document.getElementById('btn-edit-script'),
+            btnSaveScript: document.getElementById('btn-save-script'),
+            btnCloseScript: document.getElementById('btn-close-script'),
+            btnClearScript: document.getElementById('btn-clear-script'),
+            
+            previewModal: document.getElementById('preview-modal'),
+            finalVideoPreview: document.getElementById('final-video-preview'),
+            btnDiscard: document.getElementById('btn-discard'),
+            btnDownloadMp4: document.getElementById('btn-download-mp4'),
+            previewDuration: document.getElementById('preview-duration'),
+            
+            // Conversion UI
+            conversionOverlay: document.getElementById('conversion-overlay'),
+            conversionProgress: document.getElementById('conversion-progress'),
+            conversionText: document.getElementById('conversion-text')
+        };
+
+        async function initApp() {
+            // Cargar texto inicial
+            UI.prompterText.innerText = APP_STATE.text;
+            applySettings();
+            
+            try {
+                // Solicitar permisos iniciales básicos
+                const initialStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                initialStream.getTracks().forEach(t => t.stop()); // Detener inmediatamente, es solo para pedir permiso
+                
+                await getDevices();
+                await startCamera();
+            } catch (err) {
+                console.error("Error al acceder a dispositivos:", err);
+                alert("Para usar el teleprompter, debes permitir el acceso a tu cámara y micrófono.");
+            }
+
+            setupEventListeners();
+        }
+
+        async function getDevices() {
+            const devices = await navigator.mediaDevices.enumerateDevices();
+            
+            UI.cameraSelect.innerHTML = '';
+            UI.micSelect.innerHTML = '';
+            
+            const videoDevices = devices.filter(device => device.kind === 'videoinput');
+            const audioDevices = devices.filter(device => device.kind === 'audioinput');
+            
+            if(videoDevices.length === 0) UI.cameraSelect.innerHTML = '<option>No se detectaron cámaras</option>';
+            if(audioDevices.length === 0) UI.micSelect.innerHTML = '<option>No se detectaron micrófonos</option>';
+
+            videoDevices.forEach((device, index) => {
+                const option = document.createElement('option');
+                option.value = device.deviceId;
+                // Intentar adivinar si es frontal/trasera si no hay label
+                let label = device.label || `Cámara ${index + 1}`;
+                option.text = label;
+                UI.cameraSelect.appendChild(option);
+            });
+
+            audioDevices.forEach((device, index) => {
+                const option = document.createElement('option');
+                option.value = device.deviceId;
+                option.text = device.label || `Micrófono ${index + 1}`;
+                UI.micSelect.appendChild(option);
+            });
+        }
+
+        async function startCamera() {
+            if (APP_STATE.stream) {
+                APP_STATE.stream.getTracks().forEach(track => track.stop());
+            }
+
+            const videoId = UI.cameraSelect.value;
+            const audioId = UI.micSelect.value;
+            
+            const constraints = {
+                video: videoId ? { deviceId: { exact: videoId }, width: { ideal: 1920 }, height: { ideal: 1080 } } : true,
+                audio: audioId ? { deviceId: { exact: audioId }, echoCancellation: true, noiseSuppression: true } : true
+            };
+
+            try {
+                APP_STATE.stream = await navigator.mediaDevices.getUserMedia(constraints);
+                UI.videoPreview.srcObject = APP_STATE.stream;
+                
+                // Si la cámara es la trasera (usualmente label contiene 'back' o 'rear'), no aplicar modo espejo visual
+                const currentVideoTrack = APP_STATE.stream.getVideoTracks()[0];
+                const label = currentVideoTrack.label.toLowerCase();
+                if (label.includes('back') || label.includes('rear') || label.includes('environment')) {
+                    UI.videoPreview.classList.remove('mirror-video');
+                } else {
+                    UI.videoPreview.classList.add('mirror-video');
+                }
+            } catch (err) {
+                console.error("Error iniciando stream:", err);
+            }
+        }
+
+        async function toggleScreenShare() {
+            if (APP_STATE.displayStream) {
+                stopScreenShare();
+                return;
+            }
+
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+                alert('Este navegador no permite compartir pantalla. Prueba con Chrome o Edge.');
+                return;
+            }
+
+            try {
+                APP_STATE.displayStream = await navigator.mediaDevices.getDisplayMedia({
+                    video: { frameRate: { ideal: 30, max: 60 } },
+                    audio: true
+                });
+                UI.screenPreview.srcObject = APP_STATE.displayStream;
+                document.body.classList.add('presentation-mode');
+                UI.btnScreenShare.innerHTML = '<i class="ph ph-stop-circle text-lg"></i><span>Dejar de compartir</span>';
+                UI.btnScreenShare.classList.add('bg-red-500/20', 'border-red-400/40', 'text-red-100');
+                UI.btnScreenShare.classList.remove('bg-indigo-500/20', 'border-indigo-400/40', 'text-indigo-100');
+
+                const displayTrack = APP_STATE.displayStream.getVideoTracks()[0];
+                if (displayTrack) displayTrack.addEventListener('ended', stopScreenShare, { once: true });
+            } catch (err) {
+                if (err.name !== 'AbortError' && err.name !== 'NotAllowedError') {
+                    console.error('Error compartiendo pantalla:', err);
+                    alert('No se pudo iniciar la pantalla compartida.');
+                }
+            }
+        }
+
+        function stopScreenShare() {
+            if (APP_STATE.displayStream) {
+                APP_STATE.displayStream.getTracks().forEach(track => track.stop());
+            }
+            APP_STATE.displayStream = null;
+            UI.screenPreview.srcObject = null;
+            document.body.classList.remove('presentation-mode');
+            UI.btnScreenShare.innerHTML = '<i class="ph ph-presentation text-lg"></i><span>Compartir pantalla</span>';
+            UI.btnScreenShare.classList.remove('bg-red-500/20', 'border-red-400/40', 'text-red-100');
+            UI.btnScreenShare.classList.add('bg-indigo-500/20', 'border-indigo-400/40', 'text-indigo-100');
+            if (APP_STATE.isRecording) stopRecording();
+        }
+
+        function createPresentationStream() {
+            if (!APP_STATE.displayStream || !APP_STATE.stream) return APP_STATE.stream;
+
+            const canvas = document.createElement('canvas');
+            canvas.width = 1920;
+            canvas.height = 1080;
+            APP_STATE.compositeCanvas = canvas;
+            const ctx = canvas.getContext('2d');
+
+            const drawFrame = () => {
+                if (!APP_STATE.displayStream) return;
+                const sw = UI.screenPreview.videoWidth || 1920;
+                const sh = UI.screenPreview.videoHeight || 1080;
+                const scale = Math.min(canvas.width / sw, canvas.height / sh);
+                const dw = sw * scale;
+                const dh = sh * scale;
+                ctx.fillStyle = '#050505';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                ctx.drawImage(UI.screenPreview, (canvas.width - dw) / 2, (canvas.height - dh) / 2, dw, dh);
+
+                const camW = 360;
+                const camH = 225;
+                const margin = 36;
+                const x = canvas.width - camW - margin;
+                const y = canvas.height - camH - margin;
+                ctx.save();
+                ctx.beginPath();
+                ctx.roundRect(x, y, camW, camH, 22);
+                ctx.clip();
+                ctx.filter = getCameraFilter();
+                ctx.drawImage(UI.videoPreview, x, y, camW, camH);
+                ctx.filter = 'none';
+                ctx.restore();
+                ctx.strokeStyle = 'rgba(255,255,255,.9)';
+                ctx.lineWidth = 8;
+                ctx.beginPath();
+                ctx.roundRect(x, y, camW, camH, 22);
+                ctx.stroke();
+                APP_STATE.compositeAnimationId = requestAnimationFrame(drawFrame);
+            };
+            drawFrame();
+
+            const output = canvas.captureStream(30);
+            const audioContext = new AudioContext();
+            const destination = audioContext.createMediaStreamDestination();
+            const cameraAudio = APP_STATE.stream.getAudioTracks()[0];
+            const screenAudio = APP_STATE.displayStream.getAudioTracks()[0];
+            if (cameraAudio) audioContext.createMediaStreamSource(new MediaStream([cameraAudio])).connect(destination);
+            if (screenAudio) audioContext.createMediaStreamSource(new MediaStream([screenAudio])).connect(destination);
+            destination.stream.getAudioTracks().forEach(track => output.addTrack(track));
+            APP_STATE.audioContext = audioContext;
+            APP_STATE.presentationStream = output;
+            return output;
+        }
+
+        function stopPresentationStream() {
+            if (APP_STATE.compositeAnimationId) cancelAnimationFrame(APP_STATE.compositeAnimationId);
+            APP_STATE.compositeAnimationId = null;
+            if (APP_STATE.presentationStream) APP_STATE.presentationStream.getTracks().forEach(track => track.stop());
+            APP_STATE.presentationStream = null;
+            if (APP_STATE.audioContext) {
+                APP_STATE.audioContext.close();
+                APP_STATE.audioContext = null;
+            }
+        }
+
+        function startRecording() {
+            if (!APP_STATE.stream) return;
+            
+            APP_STATE.recordedChunks = [];
+            
+            // Intentar usar H264 para mejor compatibilidad MP4 nativa, si no VP8 (WebM)
+            let options = { mimeType: 'video/webm;codecs=vp8,opus' };
+            if (MediaRecorder.isTypeSupported('video/mp4;codecs=avc1,mp4a.40.2')) {
+                options = { mimeType: 'video/mp4;codecs=avc1,mp4a.40.2' }; // Safari nativo
+            } else if (MediaRecorder.isTypeSupported('video/webm;codecs=h264,opus')) {
+                options = { mimeType: 'video/webm;codecs=h264,opus' };
+            }
+
+            const recordingStream = APP_STATE.displayStream ? createPresentationStream() : APP_STATE.stream;
+            try {
+                APP_STATE.mediaRecorder = new MediaRecorder(recordingStream, options);
+            } catch (e) {
+                // Fallback a default
+                APP_STATE.mediaRecorder = new MediaRecorder(APP_STATE.stream);
+            }
+
+            APP_STATE.mediaRecorder.ondataavailable = (event) => {
+                if (event.data.size > 0) {
+                    APP_STATE.recordedChunks.push(event.data);
+                }
+            };
+
+            APP_STATE.mediaRecorder.onstop = showPreview;
+            APP_STATE.mediaRecorder.start(1000); // Guardar chunks cada segundo por seguridad
+            
+            APP_STATE.isRecording = true;
+            
+            // Activar Modo Concentración
+            enableFocusMode();
+            
+            // Iniciar Timer
+            APP_STATE.recordingStartTime = Date.now();
+            updateTimer();
+            APP_STATE.timerInterval = setInterval(updateTimer, 1000);
+        }
+
+        function stopRecording() {
+            if (APP_STATE.mediaRecorder && APP_STATE.isRecording) {
+                APP_STATE.mediaRecorder.stop();
+                APP_STATE.isRecording = false;
+                clearInterval(APP_STATE.timerInterval);
+                
+                // Desactivar Modo Concentración
+                disableFocusMode();
+                
+                // Pausar teleprompter si estaba corriendo
+                if(APP_STATE.isScrolling) toggleTeleprompter();
+                stopPresentationStream();
+            }
+        }
+
+        function updateTimer() {
+            const elapsed = Math.floor((Date.now() - APP_STATE.recordingStartTime) / 1000);
+            const mins = String(Math.floor(elapsed / 60)).padStart(2, '0');
+            const secs = String(elapsed % 60).padStart(2, '0');
+            UI.recordingTime.textContent = `${mins}:${secs}`;
+        }
+
+        function enableFocusMode() {
+            UI.topBar.classList.add('ui-hidden');
+            UI.settingsPanel.classList.add('ui-hidden');
+            
+            // Modificar barra inferior
+            UI.btnRecord.classList.add('hidden');
+            UI.btnStopRecord.classList.remove('hidden');
+            UI.bottomBar.classList.replace('bottom-6', 'bottom-10');
+            
+            // Mostrar indicador rojo arriba
+            UI.recordingIndicator.classList.remove('hidden');
+            UI.recordingIndicator.parentElement.classList.remove('ui-hidden'); // Mostrar solo contenedor del indicador
+            
+            // El fondo se mantiene según configuración
+        }
+
+        function disableFocusMode() {
+            UI.topBar.classList.remove('ui-hidden');
+            UI.settingsPanel.classList.remove('ui-hidden');
+            
+            UI.btnRecord.classList.remove('hidden');
+            UI.btnStopRecord.classList.add('hidden');
+            UI.bottomBar.classList.replace('bottom-10', 'bottom-6');
+            
+            UI.recordingIndicator.classList.add('hidden');
+        }
+
+        function toggleTeleprompter() {
+            APP_STATE.isScrolling = !APP_STATE.isScrolling;
+            
+            if (APP_STATE.isScrolling) {
+                // Iniciar
+                UI.btnPlayPrompter.innerHTML = '<i class="ph ph-pause text-2xl"></i><span class="font-medium">Pausar</span>';
+                UI.btnPlayPrompter.classList.replace('bg-primary', 'bg-slate-700');
+                UI.btnPlayPrompter.classList.replace('hover:bg-indigo-400', 'hover:bg-slate-600');
+                
+                APP_STATE.lastScrollTime = performance.now();
+                APP_STATE.animationFrameId = requestAnimationFrame(scrollLoop);
+                UI.focusLine.classList.add('opacity-100');
+            } else {
+                // Pausar
+                UI.btnPlayPrompter.innerHTML = '<i class="ph ph-play text-2xl"></i><span class="font-medium">Iniciar</span>';
+                UI.btnPlayPrompter.classList.replace('bg-slate-700', 'bg-primary');
+                UI.btnPlayPrompter.classList.replace('hover:bg-slate-600', 'hover:bg-indigo-400');
+                
+                cancelAnimationFrame(APP_STATE.animationFrameId);
+                UI.focusLine.classList.remove('opacity-100');
+            }
+        }
+
+        function scrollLoop(currentTime) {
+            if (!APP_STATE.isScrolling) return;
+
+            const deltaTime = currentTime - APP_STATE.lastScrollTime;
+            APP_STATE.lastScrollTime = currentTime;
+
+            // Calcular incremento. Speed 50 = baseline.
+            // Si speed es 0, no se mueve. Máximo es 150.
+            const pixelPerSecond = APP_STATE.speed * 2; 
+            const increment = (pixelPerSecond * deltaTime) / 1000;
+
+            APP_STATE.scrollY += increment;
+            
+            // Limitar scroll máximo basado en altura del contenido
+            const maxScroll = UI.prompterText.scrollHeight;
+            if (APP_STATE.scrollY > maxScroll + window.innerHeight/2) {
+                // Fin del texto, pausar
+                toggleTeleprompter();
+                return;
+            }
+
+            UI.prompterText.style.transform = `translateY(-${APP_STATE.scrollY}px)`;
+
+            APP_STATE.animationFrameId = requestAnimationFrame(scrollLoop);
+        }
+
+        function resetPrompter() {
+            APP_STATE.scrollY = 0;
+            UI.prompterText.style.transform = `translateY(0px)`;
+            if(APP_STATE.isScrolling) toggleTeleprompter();
+        }
+
+        // Permitir scroll manual con la rueda del ratón o táctil
+        UI.prompterScrollArea.addEventListener('wheel', (e) => {
+            APP_STATE.scrollY += e.deltaY;
+            if (APP_STATE.scrollY < 0) APP_STATE.scrollY = 0;
+            UI.prompterText.style.transform = `translateY(-${APP_STATE.scrollY}px)`;
+        });
+        
+        let touchStartY = 0;
+        UI.prompterScrollArea.addEventListener('touchstart', (e) => { touchStartY = e.touches[0].clientY; }, {passive: true});
+        UI.prompterScrollArea.addEventListener('touchmove', (e) => {
+            const touchY = e.touches[0].clientY;
+            const deltaY = touchStartY - touchY;
+            touchStartY = touchY;
+            
+            APP_STATE.scrollY += deltaY * 2; // Multiplicador para tacto más rápido
+            if (APP_STATE.scrollY < 0) APP_STATE.scrollY = 0;
+            UI.prompterText.style.transform = `translateY(-${APP_STATE.scrollY}px)`;
+        }, {passive: true});
+
+        function applySettings() {
+            // Tamaño
+            UI.prompterText.style.fontSize = `${APP_STATE.fontSize}px`;
+            UI.lblSize.textContent = `${APP_STATE.fontSize}px`;
+            UI.sliderSize.value = APP_STATE.fontSize;
+
+            // Velocidad
+            UI.lblSpeed.textContent = `${APP_STATE.speed}`;
+            UI.sliderSpeed.value = APP_STATE.speed;
+
+            // Opacidad
+            UI.prompterBg.style.backgroundColor = `rgba(0, 0, 0, ${APP_STATE.opacity / 100})`;
+            UI.lblOpacity.textContent = `${APP_STATE.opacity}%`;
+            UI.sliderOpacity.value = APP_STATE.opacity;
+
+            // Imagen de la cámara: se aplica a la vista y también al canvas de grabación
+            UI.lblCameraBrightness.textContent = `${APP_STATE.cameraBrightness}%`;
+            UI.lblCameraContrast.textContent = `${APP_STATE.cameraContrast}%`;
+            UI.lblCameraSaturation.textContent = `${APP_STATE.cameraSaturation}%`;
+            UI.sliderCameraBrightness.value = APP_STATE.cameraBrightness;
+            UI.sliderCameraContrast.value = APP_STATE.cameraContrast;
+            UI.sliderCameraSaturation.value = APP_STATE.cameraSaturation;
+            UI.videoPreview.style.filter = getCameraFilter();
+
+            // Alineación
+            UI.prompterText.className = `w-full text-${APP_STATE.align} leading-relaxed whitespace-pre-wrap px-4 pb-32 pt-10`;
+            UI.lblAlignText.textContent = APP_STATE.align === 'center' ? 'Centrado' : 'Izquierda';
+
+            // Ancho
+            UI.prompterScrollArea.style.maxWidth = APP_STATE.widthPct === 100 ? '56rem' : (APP_STATE.widthPct === 75 ? '42rem' : '32rem'); // 4xl, 2xl, max-w-lg
+
+            // Interlineado
+            UI.prompterText.style.lineHeight = APP_STATE.lineHeight;
+
+            // Espejo
+            if (APP_STATE.mirrored) {
+                UI.prompterText.classList.add('mirror-text');
+                UI.btnMirror.classList.add('text-primary');
+            } else {
+                UI.prompterText.classList.remove('mirror-text');
+                UI.btnMirror.classList.remove('text-primary');
+            }
+        }
+
+        function getCameraFilter() {
+            return `brightness(${APP_STATE.cameraBrightness}%) contrast(${APP_STATE.cameraContrast}%) saturate(${APP_STATE.cameraSaturation}%)`;
+        }
+
+        function resetCameraImage() {
+            APP_STATE.cameraBrightness = 100;
+            APP_STATE.cameraContrast = 100;
+            APP_STATE.cameraSaturation = 100;
+            applySettings();
+        }
+
+        function updateSpeed(val) {
+            APP_STATE.speed = Math.max(0, Math.min(150, val));
+            applySettings();
+        }
+
+        function updateSize(val) {
+            APP_STATE.fontSize = Math.max(24, Math.min(96, val));
+            applySettings();
+        }
+
+        function showPreview() {
+            const blob = new Blob(APP_STATE.recordedChunks, { type: APP_STATE.mediaRecorder.mimeType });
+            const videoUrl = URL.createObjectURL(blob);
+            
+            UI.finalVideoPreview.src = videoUrl;
+            UI.previewDuration.textContent = UI.recordingTime.textContent;
+            
+            // Guardar blob original para posible conversión
+            APP_STATE.lastBlob = blob;
+            APP_STATE.lastMime = APP_STATE.mediaRecorder.mimeType;
+            
+            UI.previewModal.classList.remove('hidden');
+        }
+
+        // Instancia de FFmpeg global
+        let ffmpegInstance = null;
+
+        async function exportToMP4() {
+            const originalBlob = APP_STATE.lastBlob;
+            if (!originalBlob) return;
+
+            // Si el blob ya es MP4 nativo (ej. Safari), descargar directo
+            if (APP_STATE.lastMime.includes('mp4')) {
+                downloadBlob(originalBlob, 'teleprompter-grabacion.mp4');
+                return;
+            }
+
+            // Si es WebM, necesitamos FFmpeg para convertir de verdad
+            try {
+                UI.conversionOverlay.classList.remove('hidden');
+                
+                if (!ffmpegInstance) {
+                    UI.conversionText.textContent = "Cargando motor de procesamiento (1ra vez toma un poco más)...";
+                    ffmpegInstance = new FFmpeg();
+                    
+                    // Manejar progreso
+                    ffmpegInstance.on('progress', ({ progress, time }) => {
+                        const pct = Math.round(progress * 100);
+                        UI.conversionProgress.style.width = `${pct}%`;
+                        UI.conversionText.textContent = `Convirtiendo video: ${pct}%`;
+                    });
+
+                    // Cargar Core (Usamos versión unpkg, sin dependencias COOP/COEP si es posible)
+                    // Para mayor compatibilidad en navegadores sin SharedArrayBuffer, FFmpeg v0.12+ usa single-thread core por defecto si no se le obliga a MT.
+                    const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm';
+                    await ffmpegInstance.load({
+                        coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
+                        wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
+                    });
+                }
+
+                UI.conversionText.textContent = "Preparando archivo...";
+                
+                // Escribir archivo al FS de FFmpeg
+                const inputName = 'input.webm';
+                const outputName = 'teleprompter-grabacion.mp4';
+                
+                // Convertir Blob a Uint8Array
+                const arrayBuffer = await originalBlob.arrayBuffer();
+                const uint8Array = new Uint8Array(arrayBuffer);
+                
+                await ffmpegInstance.writeFile(inputName, uint8Array);
+
+                UI.conversionText.textContent = "Iniciando conversión a MP4 (esto puede tomar un minuto)...";
+                
+                // Ejecutar comando de conversión (Preset fast para navegador)
+                await ffmpegInstance.exec(['-i', inputName, '-c:v', 'libx264', '-preset', 'ultrafast', '-c:a', 'aac', outputName]);
+
+                // Leer resultado
+                const data = await ffmpegInstance.readFile(outputName);
+                
+                // Crear nuevo Blob MP4
+                const mp4Blob = new Blob([data.buffer], { type: 'video/mp4' });
+                downloadBlob(mp4Blob, outputName);
+                
+                // Limpieza FS
+                await ffmpegInstance.deleteFile(inputName);
+                await ffmpegInstance.deleteFile(outputName);
+                
+            } catch (err) {
+                console.error("Error convirtiendo con FFmpeg, haciendo fallback a WebM:", err);
+                alert("Ocurrió un problema en la conversión nativa (limitación del navegador). Se descargará el formato original WebM.");
+                downloadBlob(originalBlob, 'teleprompter-grabacion.webm');
+            } finally {
+                UI.conversionOverlay.classList.add('hidden');
+                UI.conversionProgress.style.width = '0%';
+            }
+        }
+
+        // Helper para cargar recursos FFmpeg sin bloqueos CORS
+        async function toBlobURL(url, mimeType) {
+            const resp = await fetch(url);
+            const blob = await resp.blob();
+            return URL.createObjectURL(new Blob([blob], { type: mimeType }));
+        }
+
+        function downloadBlob(blob, filename) {
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.style.display = 'none';
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            window.URL.revokeObjectURL(url);
+            document.body.removeChild(a);
+        }
+
+        function setupEventListeners() {
+            // Devices
+            UI.cameraSelect.addEventListener('change', startCamera);
+            UI.micSelect.addEventListener('change', startCamera);
+            UI.btnScreenShare.addEventListener('click', toggleScreenShare);
+
+            // Settings Sliders
+            UI.sliderSize.addEventListener('input', (e) => updateSize(e.target.value));
+            UI.sliderSpeed.addEventListener('input', (e) => updateSpeed(e.target.value));
+            UI.sliderOpacity.addEventListener('input', (e) => {
+                APP_STATE.opacity = e.target.value;
+                applySettings();
+            });
+            UI.sliderCameraBrightness.addEventListener('input', (e) => {
+                APP_STATE.cameraBrightness = Number(e.target.value);
+                applySettings();
+            });
+            UI.sliderCameraContrast.addEventListener('input', (e) => {
+                APP_STATE.cameraContrast = Number(e.target.value);
+                applySettings();
+            });
+            UI.sliderCameraSaturation.addEventListener('input', (e) => {
+                APP_STATE.cameraSaturation = Number(e.target.value);
+                applySettings();
+            });
+            UI.btnCameraReset.addEventListener('click', resetCameraImage);
+
+            // Settings Buttons
+            UI.btnSizeInc.addEventListener('click', () => updateSize(APP_STATE.fontSize + 4));
+            UI.btnSizeDec.addEventListener('click', () => updateSize(APP_STATE.fontSize - 4));
+            UI.btnSpeedInc.addEventListener('click', () => updateSpeed(APP_STATE.speed + 10));
+            UI.btnSpeedDec.addEventListener('click', () => updateSpeed(APP_STATE.speed - 10));
+            
+            UI.btnAlign.addEventListener('click', () => {
+                APP_STATE.align = APP_STATE.align === 'center' ? 'left' : 'center';
+                applySettings();
+            });
+            UI.btnMirror.addEventListener('click', () => {
+                APP_STATE.mirrored = !APP_STATE.mirrored;
+                applySettings();
+            });
+            UI.btnWidth.addEventListener('click', () => {
+                APP_STATE.widthPct = APP_STATE.widthPct === 100 ? 75 : (APP_STATE.widthPct === 75 ? 50 : 100);
+                applySettings();
+            });
+            UI.btnLineHeight.addEventListener('click', () => {
+                APP_STATE.lineHeight = APP_STATE.lineHeight === 1.5 ? 2 : (APP_STATE.lineHeight === 2 ? 1.2 : 1.5);
+                applySettings();
+            });
+
+            // Prompter Controls
+            UI.btnPlayPrompter.addEventListener('click', toggleTeleprompter);
+            UI.btnResetPrompter.addEventListener('click', resetPrompter);
+
+            // Record Controls
+            UI.btnRecord.addEventListener('click', startRecording);
+            UI.btnStopRecord.addEventListener('click', stopRecording);
+
+            // Edit Script Modal
+            UI.btnEditScript.addEventListener('click', () => {
+                UI.scriptInput.value = APP_STATE.text;
+                UI.scriptModal.classList.remove('hidden');
+                UI.scriptInput.focus();
+            });
+            UI.btnCloseScript.addEventListener('click', () => UI.scriptModal.classList.add('hidden'));
+            UI.btnClearScript.addEventListener('click', () => UI.scriptInput.value = '');
+            UI.btnSaveScript.addEventListener('click', () => {
+                APP_STATE.text = UI.scriptInput.value || ' ';
+                UI.prompterText.innerText = APP_STATE.text;
+                UI.scriptModal.classList.add('hidden');
+                resetPrompter();
+            });
+
+            // Preview Modal
+            UI.btnDiscard.addEventListener('click', () => {
+                UI.finalVideoPreview.pause();
+                UI.finalVideoPreview.src = '';
+                UI.previewModal.classList.add('hidden');
+            });
+            UI.btnDownloadMp4.addEventListener('click', exportToMP4);
+
+            // Keyboard Shortcuts
+            window.addEventListener('keydown', (e) => {
+                // No activar atajos si se está escribiendo en el textarea
+                if (document.activeElement.tagName === 'TEXTAREA') return;
+
+                switch(e.key) {
+                    case ' ':
+                        e.preventDefault();
+                        toggleTeleprompter();
+                        break;
+                    case 'ArrowUp':
+                        e.preventDefault();
+                        updateSpeed(APP_STATE.speed + 5);
+                        break;
+                    case 'ArrowDown':
+                        e.preventDefault();
+                        updateSpeed(APP_STATE.speed - 5);
+                        break;
+                    case '+':
+                        updateSize(APP_STATE.fontSize + 2);
+                        break;
+                    case '-':
+                        updateSize(APP_STATE.fontSize - 2);
+                        break;
+                    case 'Escape':
+                        if (APP_STATE.isRecording) {
+                            // Salir del modo concentración visualmente temporalmente sin parar grabar, 
+                            // o simplemente ignorar. Mejor ignorar si graba para evitar errores.
+                        } else if (!UI.scriptModal.classList.contains('hidden')) {
+                            UI.scriptModal.classList.add('hidden');
+                        }
+                        break;
+                }
+            });
+        }
+
+        // Arrancar
+        window.addEventListener('DOMContentLoaded', initApp);
+    </script>
+</body>
+</html>

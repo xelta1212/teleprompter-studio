@@ -929,6 +929,53 @@
             return output;
         }
 
+        function createDocumentRecordingStream() {
+            if (!APP_STATE.documentKind || !UI.documentCanvas) return APP_STATE.cameraEffectStream || APP_STATE.stream;
+
+            const canvas = document.createElement('canvas');
+            canvas.width = 1920;
+            canvas.height = 1080;
+            APP_STATE.compositeCanvas = canvas;
+            const ctx = canvas.getContext('2d');
+
+            const drawFrame = () => {
+                const source = UI.documentCanvas;
+                ctx.fillStyle = '#050505';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                const scale = Math.min(canvas.width / (source.width || 1280), canvas.height / (source.height || 720));
+                const docW = (source.width || 1280) * scale;
+                const docH = (source.height || 720) * scale;
+                ctx.drawImage(source, (canvas.width - docW) / 2, (canvas.height - docH) / 2, docW, docH);
+
+                const camW = 360;
+                const camH = 225;
+                const margin = 36;
+                const x = canvas.width - camW - margin;
+                const y = canvas.height - camH - margin;
+                ctx.save();
+                ctx.beginPath();
+                ctx.roundRect(x, y, camW, camH, 22);
+                ctx.clip();
+                ctx.filter = getCameraFilter();
+                ctx.drawImage(UI.videoPreview, x, y, camW, camH);
+                ctx.filter = 'none';
+                ctx.restore();
+                ctx.strokeStyle = 'rgba(255,255,255,.9)';
+                ctx.lineWidth = 8;
+                ctx.beginPath();
+                ctx.roundRect(x, y, camW, camH, 22);
+                ctx.stroke();
+                APP_STATE.compositeAnimationId = requestAnimationFrame(drawFrame);
+            };
+            drawFrame();
+
+            const output = canvas.captureStream(30);
+            const cameraAudio = APP_STATE.stream?.getAudioTracks()[0];
+            if (cameraAudio) output.addTrack(cameraAudio.clone());
+            APP_STATE.presentationStream = output;
+            return output;
+        }
+
         function stopPresentationStream() {
             if (APP_STATE.compositeAnimationId) cancelAnimationFrame(APP_STATE.compositeAnimationId);
             APP_STATE.compositeAnimationId = null;
@@ -1039,7 +1086,9 @@
                 options = { mimeType: 'video/webm;codecs=h264,opus' };
             }
 
-            const recordingStream = APP_STATE.displayStream ? createPresentationStream() : (APP_STATE.cameraEffectStream || APP_STATE.stream);
+            const recordingStream = APP_STATE.displayStream
+                ? createPresentationStream()
+                : (APP_STATE.documentKind ? createDocumentRecordingStream() : (APP_STATE.cameraEffectStream || APP_STATE.stream));
             try {
                 APP_STATE.mediaRecorder = new MediaRecorder(recordingStream, options);
             } catch (e) {

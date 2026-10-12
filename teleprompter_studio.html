@@ -11,6 +11,7 @@
     <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/pptxviewjs/dist/PptxViewJS.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/selfie_segmentation.js"></script>
     
     <script>
         tailwind.config = {
@@ -47,6 +48,11 @@
             border: 1px solid rgba(255, 255, 255, 0.1);
         }
 
+        #settings-panel {
+            max-height: calc(100vh - 2rem);
+            overflow-y: auto;
+        }
+
         .mirror-video {
             transform: scaleX(-1);
         }
@@ -59,6 +65,10 @@
         #screen-preview {
             display: none;
             background: #050505;
+        }
+
+        #camera-source {
+            display: none;
         }
 
         body.presentation-mode #screen-preview {
@@ -195,6 +205,7 @@
 <body class="w-screen h-screen relative flex flex-col items-center justify-center">
 
     <video id="screen-preview" class="absolute inset-0 w-full h-full object-contain z-0" autoplay muted playsinline></video>
+    <video id="camera-source" autoplay muted playsinline></video>
     <video id="camera-preview" class="absolute inset-0 w-full h-full object-cover z-0 mirror-video" autoplay muted playsinline></video>
 
     <div id="prompter-container" class="absolute inset-0 z-10 flex justify-center transition-all duration-300">
@@ -330,6 +341,20 @@
                 <input type="range" id="slider-camera-saturation" min="0" max="180" value="100" class="w-full">
             </div>
             <button id="btn-camera-reset" class="text-xs text-gray-300 hover:text-white bg-white/5 hover:bg-white/10 rounded-lg py-1.5 transition-colors">Restablecer imagen</button>
+        </div>
+
+        <div class="border-t border-white/10 pt-3 flex flex-col gap-2">
+            <div class="text-sm font-medium text-gray-200 flex items-center gap-2"><i class="ph ph-image text-cyan-300"></i> Fondo de cámara</div>
+            <div class="grid grid-cols-4 gap-2">
+                <button id="btn-bg-none" class="bg-white/10 hover:bg-white/20 rounded-lg py-2 text-xs">Original</button>
+                <button id="btn-bg-blur" class="bg-indigo-500/30 hover:bg-indigo-500/50 rounded-lg py-2 text-xs">Desenfocar</button>
+                <button id="btn-bg-white" class="bg-white text-slate-900 hover:bg-gray-200 rounded-lg py-2 text-xs">Blanco</button>
+                <button id="btn-bg-black" class="bg-black border border-white/20 hover:bg-slate-900 rounded-lg py-2 text-xs">Negro</button>
+                <button id="btn-bg-brown" class="bg-amber-950 hover:bg-amber-900 rounded-lg py-2 text-xs col-span-2">Marrón</button>
+            </div>
+            <label class="text-xs text-gray-400 flex justify-between"><span>Intensidad del desenfoque</span><span id="lbl-bg-blur">18px</span></label>
+            <input type="range" id="slider-bg-blur" min="4" max="36" value="18" class="w-full">
+            <p class="text-[10px] text-gray-500">El recorte de la persona se procesa localmente.</p>
         </div>
 
         <!-- Opciones rápidas (Grid) -->
@@ -469,6 +494,13 @@
             cameraBrightness: 100,
             cameraContrast: 100,
             cameraSaturation: 100,
+            backgroundEffect: 'none',
+            backgroundBlur: 18,
+            cameraEffectCanvas: null,
+            cameraEffectStream: null,
+            selfieSegmentation: null,
+            effectFrameId: null,
+            effectBusy: false,
             documentKind: null,
             documentFile: null,
             pdfDocument: null,
@@ -482,6 +514,7 @@
 
         const UI = {
             videoPreview: document.getElementById('camera-preview'),
+            cameraSource: document.getElementById('camera-source'),
             screenPreview: document.getElementById('screen-preview'),
             prompterText: document.getElementById('prompter-text'),
             prompterScrollArea: document.getElementById('prompter-scroll-area'),
@@ -534,6 +567,13 @@
             lblCameraContrast: document.getElementById('lbl-camera-contrast'),
             lblCameraSaturation: document.getElementById('lbl-camera-saturation'),
             btnCameraReset: document.getElementById('btn-camera-reset'),
+            btnBgNone: document.getElementById('btn-bg-none'),
+            btnBgBlur: document.getElementById('btn-bg-blur'),
+            btnBgWhite: document.getElementById('btn-bg-white'),
+            btnBgBlack: document.getElementById('btn-bg-black'),
+            btnBgBrown: document.getElementById('btn-bg-brown'),
+            sliderBgBlur: document.getElementById('slider-bg-blur'),
+            lblBgBlur: document.getElementById('lbl-bg-blur'),
             
             btnSizeInc: document.getElementById('btn-size-inc'),
             btnSizeDec: document.getElementById('btn-size-dec'),
@@ -630,7 +670,10 @@
 
             try {
                 APP_STATE.stream = await navigator.mediaDevices.getUserMedia(constraints);
+                UI.cameraSource.srcObject = APP_STATE.stream;
                 UI.videoPreview.srcObject = APP_STATE.stream;
+                await UI.cameraSource.play();
+                await setupCameraEffects();
                 
                 // Si la cámara es la trasera (usualmente label contiene 'back' o 'rear'), no aplicar modo espejo visual
                 const currentVideoTrack = APP_STATE.stream.getVideoTracks()[0];
@@ -643,6 +686,78 @@
             } catch (err) {
                 console.error("Error iniciando stream:", err);
             }
+        }
+
+        async function setupCameraEffects() {
+            if (!window.SelfieSegmentation) return;
+            if (APP_STATE.effectFrameId) cancelAnimationFrame(APP_STATE.effectFrameId);
+            if (APP_STATE.cameraEffectStream) APP_STATE.cameraEffectStream.getTracks().forEach(track => track.stop());
+
+            const width = 1280;
+            const height = 720;
+            const output = document.createElement('canvas');
+            output.width = width;
+            output.height = height;
+            APP_STATE.cameraEffectCanvas = output;
+            const outputCtx = output.getContext('2d');
+            const background = document.createElement('canvas');
+            background.width = width;
+            background.height = height;
+            const backgroundCtx = background.getContext('2d');
+            const person = document.createElement('canvas');
+            person.width = width;
+            person.height = height;
+            const personCtx = person.getContext('2d');
+
+            APP_STATE.selfieSegmentation = new SelfieSegmentation({
+                locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/${file}`
+            });
+            APP_STATE.selfieSegmentation.setOptions({ modelSelection: 1 });
+            APP_STATE.selfieSegmentation.onResults((results) => {
+                outputCtx.clearRect(0, 0, width, height);
+                const effect = APP_STATE.backgroundEffect;
+                if (effect === 'none') {
+                    outputCtx.drawImage(results.image, 0, 0, width, height);
+                    return;
+                }
+
+                backgroundCtx.clearRect(0, 0, width, height);
+                if (effect === 'white' || effect === 'black' || effect === 'brown') {
+                    backgroundCtx.fillStyle = effect === 'white' ? '#ffffff' : (effect === 'black' ? '#000000' : '#6b3f24');
+                    backgroundCtx.fillRect(0, 0, width, height);
+                } else {
+                    backgroundCtx.save();
+                    backgroundCtx.filter = `blur(${APP_STATE.backgroundBlur}px)`;
+                    backgroundCtx.drawImage(results.image, -APP_STATE.backgroundBlur, -APP_STATE.backgroundBlur, width + APP_STATE.backgroundBlur * 2, height + APP_STATE.backgroundBlur * 2);
+                    backgroundCtx.restore();
+                }
+                outputCtx.drawImage(background, 0, 0);
+                personCtx.clearRect(0, 0, width, height);
+                personCtx.globalCompositeOperation = 'source-over';
+                personCtx.drawImage(results.image, 0, 0, width, height);
+                personCtx.globalCompositeOperation = 'destination-in';
+                personCtx.drawImage(results.segmentationMask, 0, 0, width, height);
+                personCtx.globalCompositeOperation = 'source-over';
+                outputCtx.drawImage(person, 0, 0);
+            });
+
+            APP_STATE.cameraEffectStream = output.captureStream(30);
+            UI.videoPreview.srcObject = APP_STATE.cameraEffectStream;
+            await UI.videoPreview.play().catch(() => {});
+
+            const processFrame = async () => {
+                if (!APP_STATE.stream || !UI.cameraSource.videoWidth) {
+                    APP_STATE.effectFrameId = requestAnimationFrame(processFrame);
+                    return;
+                }
+                if (!APP_STATE.effectBusy) {
+                    APP_STATE.effectBusy = true;
+                    try { await APP_STATE.selfieSegmentation.send({ image: UI.cameraSource }); } catch (err) { console.warn('Efecto de fondo no disponible:', err); }
+                    APP_STATE.effectBusy = false;
+                }
+                APP_STATE.effectFrameId = requestAnimationFrame(processFrame);
+            };
+            processFrame();
         }
 
         async function toggleScreenShare() {
@@ -855,12 +970,12 @@
                 options = { mimeType: 'video/webm;codecs=h264,opus' };
             }
 
-            const recordingStream = APP_STATE.displayStream ? createPresentationStream() : APP_STATE.stream;
+            const recordingStream = APP_STATE.displayStream ? createPresentationStream() : (APP_STATE.cameraEffectStream || APP_STATE.stream);
             try {
                 APP_STATE.mediaRecorder = new MediaRecorder(recordingStream, options);
             } catch (e) {
                 // Fallback a default
-                APP_STATE.mediaRecorder = new MediaRecorder(APP_STATE.stream);
+                APP_STATE.mediaRecorder = new MediaRecorder(APP_STATE.cameraEffectStream || APP_STATE.stream);
             }
 
             APP_STATE.mediaRecorder.ondataavailable = (event) => {
@@ -1029,6 +1144,11 @@
             UI.sliderCameraContrast.value = APP_STATE.cameraContrast;
             UI.sliderCameraSaturation.value = APP_STATE.cameraSaturation;
             UI.videoPreview.style.filter = getCameraFilter();
+            UI.lblBgBlur.textContent = `${APP_STATE.backgroundBlur}px`;
+            UI.sliderBgBlur.value = APP_STATE.backgroundBlur;
+            [UI.btnBgNone, UI.btnBgBlur, UI.btnBgWhite, UI.btnBgBlack, UI.btnBgBrown].forEach(button => button.classList.remove('ring-2', 'ring-cyan-300'));
+            const activeBgButton = { none: UI.btnBgNone, blur: UI.btnBgBlur, white: UI.btnBgWhite, black: UI.btnBgBlack, brown: UI.btnBgBrown }[APP_STATE.backgroundEffect];
+            activeBgButton?.classList.add('ring-2', 'ring-cyan-300');
 
             // Alineación
             UI.prompterText.className = `w-full text-${APP_STATE.align} leading-relaxed whitespace-pre-wrap px-4 pb-32 pt-10`;
@@ -1058,6 +1178,11 @@
             APP_STATE.cameraBrightness = 100;
             APP_STATE.cameraContrast = 100;
             APP_STATE.cameraSaturation = 100;
+            applySettings();
+        }
+
+        function setBackgroundEffect(effect) {
+            APP_STATE.backgroundEffect = effect;
             applySettings();
         }
 
@@ -1211,6 +1336,15 @@
                 applySettings();
             });
             UI.btnCameraReset.addEventListener('click', resetCameraImage);
+            UI.btnBgNone.addEventListener('click', () => setBackgroundEffect('none'));
+            UI.btnBgBlur.addEventListener('click', () => setBackgroundEffect('blur'));
+            UI.btnBgWhite.addEventListener('click', () => setBackgroundEffect('white'));
+            UI.btnBgBlack.addEventListener('click', () => setBackgroundEffect('black'));
+            UI.btnBgBrown.addEventListener('click', () => setBackgroundEffect('brown'));
+            UI.sliderBgBlur.addEventListener('input', (e) => {
+                APP_STATE.backgroundBlur = Number(e.target.value);
+                applySettings();
+            });
 
             // Settings Buttons
             UI.btnSizeInc.addEventListener('click', () => updateSize(APP_STATE.fontSize + 4));

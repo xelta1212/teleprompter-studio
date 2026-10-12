@@ -501,6 +501,7 @@
             selfieSegmentation: null,
             effectFrameId: null,
             effectBusy: false,
+            effectReady: false,
             documentKind: null,
             documentFile: null,
             pdfDocument: null,
@@ -673,7 +674,7 @@
                 UI.cameraSource.srcObject = APP_STATE.stream;
                 UI.videoPreview.srcObject = APP_STATE.stream;
                 await UI.cameraSource.play();
-                await setupCameraEffects();
+                if (APP_STATE.backgroundEffect !== 'none') await setupCameraEffects();
                 
                 // Si la cámara es la trasera (usualmente label contiene 'back' o 'rear'), no aplicar modo espejo visual
                 const currentVideoTrack = APP_STATE.stream.getVideoTracks()[0];
@@ -689,9 +690,13 @@
         }
 
         async function setupCameraEffects() {
-            if (!window.SelfieSegmentation) return;
+            if (!window.SelfieSegmentation) {
+                UI.videoPreview.srcObject = APP_STATE.stream;
+                return;
+            }
             if (APP_STATE.effectFrameId) cancelAnimationFrame(APP_STATE.effectFrameId);
             if (APP_STATE.cameraEffectStream) APP_STATE.cameraEffectStream.getTracks().forEach(track => track.stop());
+            APP_STATE.effectReady = false;
 
             const width = 1280;
             const height = 720;
@@ -739,25 +744,48 @@
                 personCtx.drawImage(results.segmentationMask, 0, 0, width, height);
                 personCtx.globalCompositeOperation = 'source-over';
                 outputCtx.drawImage(person, 0, 0);
+                if (!APP_STATE.effectReady) {
+                    APP_STATE.effectReady = true;
+                    UI.videoPreview.srcObject = APP_STATE.cameraEffectStream;
+                    UI.videoPreview.play().catch(() => {});
+                }
             });
 
             APP_STATE.cameraEffectStream = output.captureStream(30);
-            UI.videoPreview.srcObject = APP_STATE.cameraEffectStream;
-            await UI.videoPreview.play().catch(() => {});
 
             const processFrame = async () => {
+                if (APP_STATE.backgroundEffect === 'none' || !APP_STATE.selfieSegmentation) {
+                    APP_STATE.effectFrameId = null;
+                    return;
+                }
                 if (!APP_STATE.stream || !UI.cameraSource.videoWidth) {
                     APP_STATE.effectFrameId = requestAnimationFrame(processFrame);
                     return;
                 }
                 if (!APP_STATE.effectBusy) {
                     APP_STATE.effectBusy = true;
-                    try { await APP_STATE.selfieSegmentation.send({ image: UI.cameraSource }); } catch (err) { console.warn('Efecto de fondo no disponible:', err); }
+                    try { await APP_STATE.selfieSegmentation.send({ image: UI.cameraSource }); } catch (err) {
+                        console.warn('Efecto de fondo no disponible:', err);
+                        APP_STATE.backgroundEffect = 'none';
+                        applySettings();
+                        stopCameraEffects();
+                    }
                     APP_STATE.effectBusy = false;
                 }
                 APP_STATE.effectFrameId = requestAnimationFrame(processFrame);
             };
             processFrame();
+        }
+
+        function stopCameraEffects() {
+            if (APP_STATE.effectFrameId) cancelAnimationFrame(APP_STATE.effectFrameId);
+            APP_STATE.effectFrameId = null;
+            APP_STATE.effectBusy = false;
+            APP_STATE.effectReady = false;
+            if (APP_STATE.cameraEffectStream) APP_STATE.cameraEffectStream.getTracks().forEach(track => track.stop());
+            APP_STATE.cameraEffectStream = null;
+            UI.videoPreview.srcObject = APP_STATE.stream;
+            UI.videoPreview.play().catch(() => {});
         }
 
         async function toggleScreenShare() {
@@ -1184,6 +1212,8 @@
         function setBackgroundEffect(effect) {
             APP_STATE.backgroundEffect = effect;
             applySettings();
+            if (effect === 'none') stopCameraEffects();
+            else setupCameraEffects();
         }
 
         function updateSpeed(val) {

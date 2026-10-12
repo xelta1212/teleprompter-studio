@@ -191,6 +191,47 @@
             body.document-mode #top-bar { width: 100%; top: 0; }
         }
 
+        /* El guion se muestra centrado sobre la diapositiva, estilo teleprompter */
+        body.document-mode #document-panel {
+            padding-right: 0;
+        }
+
+        body.document-mode #prompter-container {
+            inset: 0;
+            width: 100%;
+            background: transparent;
+            border: 0;
+            pointer-events: none;
+        }
+
+        body.document-mode #prompter-scroll-area {
+            width: 100%;
+            max-width: 100% !important;
+            pointer-events: none;
+            padding-top: 42vh !important;
+            padding-bottom: 42vh !important;
+        }
+
+        body.document-mode #prompter-bg {
+            background: transparent !important;
+        }
+
+        body.document-mode #prompter-text {
+            width: min(92vw, 980px) !important;
+            margin: 0 auto;
+            padding: 16px 26px !important;
+            font-size: clamp(24px, 3vw, 52px) !important;
+            line-height: 1.35 !important;
+            text-align: center !important;
+            text-shadow: 0 3px 12px #000, 0 0 4px #000;
+            background: rgba(0, 0, 0, .38);
+            border-radius: 18px;
+        }
+
+        body.document-mode #focus-line {
+            display: none;
+        }
+
         #document-canvas {
             max-width: 100%;
             max-height: calc(100vh - 190px);

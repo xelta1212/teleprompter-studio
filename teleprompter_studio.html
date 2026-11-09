@@ -553,6 +553,7 @@
             effectFrameId: null,
             effectBusy: false,
             effectReady: false,
+            effectLastProcessTime: 0,
             documentKind: null,
             documentFile: null,
             pdfDocument: null,
@@ -749,8 +750,9 @@
             if (APP_STATE.cameraEffectStream) APP_STATE.cameraEffectStream.getTracks().forEach(track => track.stop());
             APP_STATE.effectReady = false;
 
-            const width = 1280;
-            const height = 720;
+            // Resolución moderada para evitar que el recorte de persona congele la cámara.
+            const width = 640;
+            const height = 360;
             const output = document.createElement('canvas');
             output.width = width;
             output.height = height;
@@ -802,7 +804,7 @@
                 }
             });
 
-            APP_STATE.cameraEffectStream = output.captureStream(30);
+            APP_STATE.cameraEffectStream = output.captureStream(24);
 
             const processFrame = async () => {
                 if (APP_STATE.backgroundEffect === 'none' || !APP_STATE.selfieSegmentation) {
@@ -813,7 +815,10 @@
                     APP_STATE.effectFrameId = requestAnimationFrame(processFrame);
                     return;
                 }
-                if (!APP_STATE.effectBusy) {
+                const now = performance.now();
+                const processInterval = 1000 / 12;
+                if (!APP_STATE.effectBusy && now - APP_STATE.effectLastProcessTime >= processInterval) {
+                    APP_STATE.effectLastProcessTime = now;
                     APP_STATE.effectBusy = true;
                     try { await APP_STATE.selfieSegmentation.send({ image: UI.cameraSource }); } catch (err) {
                         console.warn('Efecto de fondo no disponible:', err);
@@ -1103,7 +1108,7 @@
                 APP_STATE.mediaRecorder = new MediaRecorder(recordingStream, options);
             } catch (e) {
                 // Fallback a default
-                APP_STATE.mediaRecorder = new MediaRecorder(APP_STATE.cameraEffectStream || APP_STATE.stream);
+                APP_STATE.mediaRecorder = new MediaRecorder(recordingStream);
             }
 
             APP_STATE.mediaRecorder.ondataavailable = (event) => {
@@ -1112,7 +1117,11 @@
                 }
             };
 
-            APP_STATE.mediaRecorder.onstop = showPreview;
+            APP_STATE.mediaRecorder.onstop = () => {
+                showPreview();
+                // Esperar a que MediaRecorder emita el último chunk antes de cerrar el canvas/audio.
+                stopPresentationStream();
+            };
             APP_STATE.mediaRecorder.start(1000); // Guardar chunks cada segundo por seguridad
             
             APP_STATE.isRecording = true;
@@ -1137,7 +1146,6 @@
                 
                 // Pausar teleprompter si estaba corriendo
                 if(APP_STATE.isScrolling) toggleTeleprompter();
-                stopPresentationStream();
             }
         }
 

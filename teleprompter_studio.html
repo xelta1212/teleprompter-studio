@@ -750,9 +750,9 @@
             if (APP_STATE.cameraEffectStream) APP_STATE.cameraEffectStream.getTracks().forEach(track => track.stop());
             APP_STATE.effectReady = false;
 
-            // Resolución moderada para evitar que el recorte de persona congele la cámara.
-            const width = 640;
-            const height = 360;
+            // La segmentación trabaja con una imagen pequeña; la cámara y la grabación mantienen su fluidez.
+            const width = 360;
+            const height = 203;
             const output = document.createElement('canvas');
             output.width = width;
             output.height = height;
@@ -766,11 +766,15 @@
             person.width = width;
             person.height = height;
             const personCtx = person.getContext('2d');
+            const input = document.createElement('canvas');
+            input.width = width;
+            input.height = height;
+            const inputCtx = input.getContext('2d');
 
             APP_STATE.selfieSegmentation = new SelfieSegmentation({
                 locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/${file}`
             });
-            APP_STATE.selfieSegmentation.setOptions({ modelSelection: 1 });
+            APP_STATE.selfieSegmentation.setOptions({ modelSelection: 0 });
             APP_STATE.selfieSegmentation.onResults((results) => {
                 outputCtx.clearRect(0, 0, width, height);
                 const effect = APP_STATE.backgroundEffect;
@@ -816,11 +820,12 @@
                     return;
                 }
                 const now = performance.now();
-                const processInterval = 1000 / 12;
+                const processInterval = 1000 / 6;
                 if (!APP_STATE.effectBusy && now - APP_STATE.effectLastProcessTime >= processInterval) {
                     APP_STATE.effectLastProcessTime = now;
                     APP_STATE.effectBusy = true;
-                    try { await APP_STATE.selfieSegmentation.send({ image: UI.cameraSource }); } catch (err) {
+                    inputCtx.drawImage(UI.cameraSource, 0, 0, width, height);
+                    try { await APP_STATE.selfieSegmentation.send({ image: input }); } catch (err) {
                         console.warn('Efecto de fondo no disponible:', err);
                         APP_STATE.backgroundEffect = 'none';
                         applySettings();
